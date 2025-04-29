@@ -18,5 +18,6 @@ ActiveRecord::Schema[8.0].define(version: 2025_04_29_060140) do
     t.datetime "updated_at", null: false
     t.string "middle_name"
     t.string "middle_name2"
+    t.string "middle_name3"
   end
 end
