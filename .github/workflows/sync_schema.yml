@@ -1,0 +1,106 @@
+name: Sync Schema to Project B
+
+on:
+  push:
+    branches:
+      - main # Or your default branch name
+    paths:
+      - 'db/schema.rb' # Only trigger if schema.rb changes
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    # Prevent concurrent runs for the same workflow to avoid race conditions within this repo's actions
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout Source Repo (Project A)
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Needed for potential future diff checks
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "Schema Sync Bot"
+          git config --global user.email "actions-bot@users.noreply.github.com"
+
+      - name: Sync Schema File to Target Repo (Project B)
+        env:
+          GITHUB_TOKEN: ${{ secrets.SYNC_PAT }} # Use the PAT secret
+          TARGET_REPO: "hardeylim/project_b"
+          SOURCE_REPO: ${{ github.repository }} # This will be "hardeylim/project_a"
+          TARGET_BRANCH: "main" # Or your default branch name in Project B
+        run: |
+          echo "Source Repo: $SOURCE_REPO"
+          echo "Target Repo: $TARGET_REPO"
+          SOURCE_SCHEMA_PATH="${{ github.workspace }}/db/schema.rb"
+
+          echo "Cloning target repo $TARGET_REPO..."
+          TEMP_DIR=$(mktemp -d)
+          # Clone using the PAT for authentication
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${TARGET_REPO}.git" "$TEMP_DIR"
+          
+          cd "$TEMP_DIR"
+          # Ensure we are on the target base branch
+          git checkout $TARGET_BRANCH
+
+          TARGET_SCHEMA_PATH="db/schema.rb" 
+
+          # Check if schema file exists in target
+          if [[ ! -f "$TARGET_SCHEMA_PATH" ]]; then
+             echo "WARN: schema.rb not found in $TARGET_REPO at path $TARGET_SCHEMA_PATH, skipping sync."
+             cd ..
+             rm -rf "$TEMP_DIR"
+             exit 0 # Exit successfully, nothing to sync
+          fi
+
+          echo "Copying schema file..."
+          cp "$SOURCE_SCHEMA_PATH" "$TARGET_SCHEMA_PATH"
+
+          # Check if there are actual changes to the schema file after copying
+          if git diff --quiet "$TARGET_SCHEMA_PATH"; then
+            echo "Schema in $TARGET_REPO is already up-to-date with $SOURCE_REPO."
+            cd ..
+            rm -rf "$TEMP_DIR"
+            exit 0 # Exit successfully, no changes needed
+          fi
+
+          echo "Schema changes detected. Creating branch and PR..."
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          # Extract short name like 'project_a' from 'hardeylim/project_a'
+          SHORT_SOURCE_NAME=$(basename $SOURCE_REPO) 
+          BRANCH_NAME="sync-schema-from-${SHORT_SOURCE_NAME}-${TIMESTAMP}"
+          
+          git checkout -b "$BRANCH_NAME"
+          git add "$TARGET_SCHEMA_PATH"
+          git commit -m "chore: Sync schema.rb from ${SOURCE_REPO}"
+          
+          echo "Pushing branch $BRANCH_NAME to $TARGET_REPO..."
+          git push origin "$BRANCH_NAME"
+
+          echo "Creating Pull Request in $TARGET_REPO..."
+          # Use GitHub CLI (gh) to create the Pull Request
+          gh pr create \
+            --title "chore(schema): Automated Schema Sync from ${SOURCE_REPO}" \
+            --body "This PR automatically syncs the latest schema.rb changes merged in ${SOURCE_REPO}. 
+
+            **Action Required:**
+            1. Review the changes.
+            2. Merge this PR promptly.
+            3. If you have local schema changes, rebase them onto \`$TARGET_BRANCH\` *after* this PR is merged and resolve any conflicts.
+          
+            *Automated by GitHub Actions.*" \
+            --base "$TARGET_BRANCH" \
+            --head "$BRANCH_NAME" \
+            --repo "$TARGET_REPO"
+          
+          echo "PR created for $TARGET_REPO."
+          
+          # Cleanup
+          cd ..
+          rm -rf "$TEMP_DIR"
+    outputs:
+      # Optional: Output the branch name created in the target repo
+      pr_branch: ${{ env.BRANCH_NAME }}
